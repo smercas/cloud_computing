@@ -10,11 +10,12 @@ load_dotenv()
 import azure.storage.blob
 from azure.storage.blob import BlobServiceClient
 import app_config
+import webbrowser
 
-# AZURE_CONNECTION_STRING = " DefaultEndpointsProtocol=https;AccountName=calendarappstoragecloud;AccountKey=40Qtdu5nPtczY4yg8wbWcNVnLiYWBCkaDGbQ3fMvBQ1/lgkEuKRC9rV+/UM6utw38Jp8PjUTemsr+AStCeFD6g==;EndpointSuffix=core.windows.net" # DON'T PUT SECRETS HERE BTW; if you're sure abt using some secrets, you can add them to the env in github > setting > secrets and variables
-# CONTAINER_NAME = "event-files"
-# blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
-# container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+AZURE_CONNECTION_STRING = " DefaultEndpointsProtocol=https;AccountName=calendarappstoragecloud;AccountKey=40Qtdu5nPtczY4yg8wbWcNVnLiYWBCkaDGbQ3fMvBQ1/lgkEuKRC9rV+/UM6utw38Jp8PjUTemsr+AStCeFD6g==;EndpointSuffix=core.windows.net" # DON'T PUT SECRETS HERE BTW; if you're sure abt using some secrets, you can add them to the env in github > setting > secrets and variables
+CONTAINER_NAME = "event-files"
+blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
+container_client = blob_service_client.get_container_client(CONTAINER_NAME)
 
 def upload_file_to_container(file_name, file_path):
     # Upload the file to the container
@@ -27,7 +28,7 @@ app.config.from_object(app_config)
 auth = Auth(
 	app,
 	client_id=os.getenv("CLIENT_ID"),
-	client_credential=os.environ["APP_REGISTRATION_CLIENT_SECRET"],
+	#client_credential=os.environ["APP_REGISTRATION_CLIENT_SECRET"], # eroare nush dc
 	redirect_uri=os.getenv("REDIRECT_URI"),
 	b2c_tenant_name=os.getenv('B2C_TENANT_NAME'),
 	b2c_signup_signin_user_flow=os.getenv('SIGNUP_SIGNIN_USER_FLOW'),
@@ -38,11 +39,11 @@ auth = Auth(
 
 
 @app.route('/')
-@auth.login_required
+#@auth.login_required  # uncomment cand merge login
 def index():
 	print(request.headers)
 	print('Request for index page received')
-	return render_template('index.html')
+	return render_template('homepage.html')
 
 @app.route('/redirect')
 def redirect():
@@ -70,6 +71,20 @@ def hello():
 
 
 if __name__ == '__main__':
+	# test blob upload - merge! 
+	# try:
+	# 	test_filename = r"C:\Users\panai\Downloads\CLOUD COMPUTING.pdf"
+	# 	with open(test_filename, "w") as f:
+	# 		f.write("Test upload")
+
+	# 	upload_file_to_container(test_filename, test_filename)
+
+	# 	print("upload test successful.")
+	# except Exception as e:
+	# 	print("upload test failed:", str(e))
+
+
+	webbrowser.open('http://localhost:5000')
 	app.run()
 
 # app.run(host='
