@@ -1,5 +1,5 @@
 ms_identity_python[flask] @ https://github.com/azure-samples/ms-identity-python/archive/refs/heads/0.9.zip
-dotenv==1.1.0
+python-dotenv==1.1.0
 azure_storage_blob==12.25.1
 azure_identity==1.23.0
 azure_keyvault==4.2.0
