@@ -35,7 +35,7 @@ auth = Auth(
 	app,
 	client_id=										key_vault["app-registration-client-id"],
 	client_credential=						key_vault["app-registration-client-secret"],
-	redirect_uri=									os.environ["redirect-uri"],
+	redirect_uri=									os.environ["redirect_uri"],
 	b2c_tenant_name=							key_vault["b2c-tenant-name"],
 	b2c_signup_signin_user_flow=	key_vault['b2c-sign-up-and-sign-in-user-flow'],
 	b2c_edit_profile_user_flow=		key_vault['b2c-edit-profile-user-flow'],
