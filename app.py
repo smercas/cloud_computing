@@ -2,16 +2,19 @@ import os
 
 from dotenv import load_dotenv
 load_dotenv()
+from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import text
 from identity.flask import Auth
 from flask import (	Flask, redirect, render_template, request,
 										send_from_directory, url_for)
 
 from backend import utils
 
-import azure.storage.blob
 from azure.storage.blob import BlobServiceClient
-import app_config
 import webbrowser
+
+from backend.key_vault import KeyVault
+key_vault = KeyVault(default_transform=utils.to_value)
 
 AZURE_CONNECTION_STRING = " DefaultEndpointsProtocol=https;AccountName=calendarappstoragecloud;AccountKey=40Qtdu5nPtczY4yg8wbWcNVnLiYWBCkaDGbQ3fMvBQ1/lgkEuKRC9rV+/UM6utw38Jp8PjUTemsr+AStCeFD6g==;EndpointSuffix=core.windows.net" # DON'T PUT SECRETS HERE BTW; if you're sure abt using some secrets, you can add them to the env in github > setting > secrets and variables
 CONTAINER_NAME = "event-files"
@@ -25,11 +28,8 @@ def upload_file_to_container(file_name, file_path):
 		print(f"File {file_name} uploaded to container {CONTAINER_NAME}.")
 
 app = Flask(__name__)
-import app_config
-app.config.from_object(app_config)
-
-from backend.key_vault import KeyVault
-key_vault = KeyVault(default_transform=utils.to_value)
+app.config.from_object('app_config')
+app.config["SQLALCHEMY_DATABASE_URI"] = key_vault["database-uri"]
 
 auth = Auth(
 	app,
@@ -42,12 +42,19 @@ auth = Auth(
 	b2c_reset_password_user_flow=	key_vault['b2c-reset-password-user-flow'],
 )
 
+db = SQLAlchemy(app)
 
+@app.route("/db-test")
+def db_test():
+	try:
+		result = db.session.execute(text("SELECT GETDATE()")).fetchone()
+		return f"DB Connected! Current time: {result[0]}"
+	except Exception as e:
+		return f"DB Error: {e}"
 
 @app.route('/')
 @auth.login_required
 def index(*, context):
-	print('Request for index page received')
 	return render_template('index.html')
 
 @app.route('/favicon.ico')
@@ -60,9 +67,7 @@ def hello():
 	name = request.form.get('name')
 
 	if name:
-		print(f'Request for hello page received with name={name}')
 		return render_template('hello.html', name = name)
-	print('Request for hello page received with no name or blank name -- redirecting')
 	return redirect(url_for('index'))
 
 
