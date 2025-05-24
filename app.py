@@ -1,9 +1,12 @@
+from datetime import datetime
 import os
 
 from dotenv import load_dotenv
 load_dotenv()
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
+from sqlalchemy.ext.automap import automap_base, AutomapBase
+from sqlalchemy.orm import Session
 from identity.flask import Auth
 from flask import (	Flask, redirect, render_template, request,
 										send_from_directory, url_for)
@@ -30,6 +33,7 @@ def upload_file_to_container(file_name, file_path):
 app = Flask(__name__)
 app.config.from_object('app_config')
 app.config["SQLALCHEMY_DATABASE_URI"] = key_vault["database-uri"]
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 auth = Auth(
 	app,
@@ -43,14 +47,155 @@ auth = Auth(
 )
 
 db = SQLAlchemy(app)
+base: AutomapBase = automap_base()
+with app.app_context():
+	base.prepare(db.engine)
 
-@app.route("/db-test")
-def db_test():
-	try:
-		result = db.session.execute(text("SELECT GETDATE()")).fetchone()
-		return f"DB Connected! Current time: {result[0]}"
-	except Exception as e:
-		return f"DB Error: {e}"
+users = base.classes.users
+events = base.classes.events
+notes = base.classes.notes
+reminders = base.classes.reminders
+file_attachments = base.classes.file_attachments
+
+events.field_transform_pairs = {
+	'title':				utils.identity,
+	'start_date':		datetime.fromisoformat,
+	'end_date':			datetime.fromisoformat,
+	'location':			utils.identity,
+	'description':	utils.identity,
+} # im too lazy to do reflection on the object and figure out a cleaner way of doing this
+
+notes.field_transform_pairs = {
+	"content": utils.identity,
+}
+
+def apply_data_to_automap(o, data: dict[str, str]):
+	for field, transform in o.__class__.field_transform_pairs.items():
+		v = data.get(field, None)
+		if v is None: continue
+		setattr(o, field, transform(v))
+
+events.apply = apply_data_to_automap
+notes.apply = apply_data_to_automap
+
+def automap_to_dict(o):
+	res = {f: getattr(o, f) for f in o.__class__.field_transform_pairs.keys()}
+	res["id"] = o.id
+	return {k: v for k, v in res.items() if v is not None}
+
+@app.route("/events", methods=["GET"])
+@auth.login_required
+def get_events(*, context):
+	session = Session(db.engine)
+	events = session.query(events).filter(events.user_id == context["user"]["oid"]).all()
+	return { "events": list(map(automap_to_dict, events)) }
+
+@app.route("/events", methods=["POST"])
+@auth.login_required
+def create_event(*, context):
+	data = request.json
+	session = Session(db.engine)
+	event = events(
+		title=data['title'],
+		start_time=datetime.fromisoformat(data['start_time']),
+		end_time=datetime.fromisoformat(data['end_time']),
+		location=data.get('location', None),
+		description=data.get('description', None),
+		user_id=context["user"]["oid"]
+	)
+	session.add(event)
+	session.commit()
+	return automap_to_dict(event), 201
+
+@app.route("/events/<id>", methods=["GET"])
+@auth.login_required
+def get_event(id, *, context):
+	session = Session(db.engine)
+	event = session.query(events).filter_by(id=id, user_id=context["user"]["oid"]).first()
+	if not event:
+		return {"error": "Event not found"}, 404
+	return automap_to_dict(event), 200
+
+@app.route("/events/<event_id>", methods=["PUT"])
+@auth.login_required
+def update_event(event_id, *, context):
+	data = request.json
+	session = Session(db.engine)
+	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+	if not event:
+		return {"error": "Event not found"}, 404
+	apply_data_to_automap(event, data)
+	# event.apply(data) #TODO: see if this works
+	session.commit()
+	return {}, 200
+
+@app.route("/events/<event_id>", methods=["DELETE"])
+@auth.login_required
+def delete_event(event_id, *, context):
+	session = Session(db.engine)
+	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+	if not event:
+		return {"error": "Event not found"}, 404
+	session.delete(event)
+	session.commit()
+	return {}, 204
+
+@app.route("/events/<event_id>/notes", methods=["GET"])
+@auth.login_required
+def get_notes(event_id, *, context):
+	session = Session(db.engine)
+	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+	if not event:
+		return {"error": "Event not found"}, 404
+	notes = session.query(notes).filter_by(event_id=event_id).all()
+	return {"notes": list(map(automap_to_dict, notes))}, 200
+
+@app.route("/events/<event_id>/notes", methods=["POST"])
+@auth.login_required
+def add_note(event_id, *, context):
+	data = request.json
+	session = Session(db.engine)
+	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+	if not event:
+		return {"error": "Event not found"}, 404
+	note = notes(event_id=event_id, content=data['content'])
+	session.add(note)
+	session.commit()
+	return automap_to_dict(note), 201
+
+@app.route("/events/<event_id>/notes/<note_id>", methods=["PUT"])
+@auth.login_required
+def update_note(event_id, note_id, *, context):
+	data = request.json
+	session = Session(db.engine)
+	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+	if not event:
+		return {"error": "Event not found"}, 404
+	note = session.query(notes).get(note_id)
+	if not note or note.event_id != event_id:
+		return {"error": "Note not found"}, 404
+	apply_data_to_automap(note, data)
+	# note.apply(data) #TODO: see if this works
+	session.commit()
+	return {}, 200
+
+@app.route("/events/<event_id>/notes/<note_id>", methods=["DELETE"])
+@auth.login_required
+def delete_note(event_id, note_id, *, context):
+	session = Session(db.engine)
+	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+	if not event:
+		return {"error": "Event not found"}, 404
+	note = session.query(notes).get(note_id)
+	if not note or note.event_id != event_id:
+		return {"error": "Note not found"}, 404
+	session.delete(note)
+	session.commit()
+	return {}, 204
+
+
+
+
 
 @app.route('/')
 @auth.login_required
@@ -70,6 +215,18 @@ def hello():
 		return render_template('hello.html', name = name)
 	return redirect(url_for('index'))
 
+@app.route("/logout")
+def logout():
+	tenant = key_vault["b2c-tenant-name"]
+	policy = key_vault["b2c-sign-up-and-sign-in-user-flow"]
+	post_logout_redirect_uri = url_for("index", _external=True)
+
+	logout_url = (
+		f"https://{tenant}.b2clogin.com/{tenant}.onmicrosoft.com/{policy}/oauth2/v2.0/logout"
+		f"?post_logout_redirect_uri={post_logout_redirect_uri}"
+	)
+	return redirect(logout_url)
+
 
 if __name__ == '__main__':
 	# test blob upload - merge! 
@@ -85,5 +242,5 @@ if __name__ == '__main__':
 	# 	print("upload test failed:", str(e))
 
 
-	webbrowser.open('http://localhost:5000')
+	webbrowser.open('http://localhost:5000/events')
 	app.run()
