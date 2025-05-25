@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from functools import wraps
 import os
 
 from dotenv import load_dotenv
@@ -14,37 +15,18 @@ from backend import utils
 
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
-import webbrowser
 
 from backend.key_vault import KeyVault
 key_vault = KeyVault(default_transform=utils.to_value)
-
 
 credential = DefaultAzureCredential()
 blob_service_client = BlobServiceClient(account_url=key_vault["blob-account-url"], credential=credential)
 container_client = blob_service_client.get_container_client(key_vault["blob-container-name"])
 
-def upload_file_to_container(file_name, file_path):
-	# Upload the file to the container
-	with open(file_path, "rb") as data:
-		container_client.upload_blob(name=file_name, data=data)
-		print(f"File {file_name} uploaded to container {key_vault["blob-container-name"]}.")
-
 app = Flask(__name__)
 app.config.from_object('app_config')
 app.config["SQLALCHEMY_DATABASE_URI"] = key_vault["database-uri"]
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-
-auth = Auth(
-	app,
-	client_id=										key_vault["app-registration-client-id"],
-	client_credential=						key_vault["app-registration-client-secret"],
-	redirect_uri=									os.environ["redirect_uri"],
-	b2c_tenant_name=							key_vault["b2c-tenant-name"],
-	b2c_signup_signin_user_flow=	key_vault['b2c-sign-up-and-sign-in-user-flow'],
-	b2c_edit_profile_user_flow=		key_vault['b2c-edit-profile-user-flow'],
-	b2c_reset_password_user_flow=	key_vault['b2c-reset-password-user-flow'],
-)
 
 db = SQLAlchemy(app)
 base: AutomapBase = automap_base()
@@ -97,6 +79,43 @@ def automap_to_dict(o):
 	res["id"] = o.id
 	return {k: v for k, v in res.items() if v is not None}
 
+class CustomAuth(Auth): # there might be issues here but i'm too dumb to figure them out
+	@staticmethod
+	def __add_user_if_needed(user_dict):
+		session = Session(db.engine)
+		user_entry = session.get(users, user_dict["oid"])
+		if user_entry is not None: return
+		user_entry = users(
+			id=						user_dict["oid"],
+			email=				user_dict["emails"][0],
+			display_name=	user_dict["name"],
+		)
+		session.add(user_entry)
+		session.commit()
+
+	def login_required(self, function=None, /, *, scopes: list[str] | None=None):
+		@wraps(function)
+		def wrapper(*args, **kwargs):
+			user = self._auth.get_user()
+			context = self._login_required(self._auth, user, scopes)
+			if context:
+				self.__add_user_if_needed(user) # this line is the only change to the original implementation
+				return function(*args, context=context, **kwargs)
+			# Save an http 302 by calling self.login(request) instead of redirect(self.login)
+			return self.login(next_link=self._request.url, scopes=scopes)
+		return wrapper
+
+auth = CustomAuth(
+	app,
+	client_id=										key_vault["app-registration-client-id"],
+	client_credential=						key_vault["app-registration-client-secret"],
+	redirect_uri=									os.environ["redirect_uri"],
+	b2c_tenant_name=							key_vault["b2c-tenant-name"],
+	b2c_signup_signin_user_flow=	key_vault['b2c-sign-up-and-sign-in-user-flow'],
+	b2c_edit_profile_user_flow=		key_vault['b2c-edit-profile-user-flow'],
+	b2c_reset_password_user_flow=	key_vault['b2c-reset-password-user-flow'],
+)
+
 @app.route("/events", methods=["GET"])
 @auth.login_required
 def get_events(*, context):
@@ -148,12 +167,12 @@ def create_event(*, context):
 	data = request.json
 	session = Session(db.engine)
 	event = events(
-		title=data['title'],
-		start_time=datetime.fromisoformat(data['start_time']),
-		end_time=datetime.fromisoformat(data['end_time']),
-		location=data.get('location', None),
-		description=data.get('description', None),
-		user_id=context["user"]["oid"]
+		title=				data['title'],
+		start_time=		datetime.fromisoformat(data['start_time']),
+		end_time=			datetime.fromisoformat(data['end_time']),
+		location=			data.get('location', None),
+		description=	data.get('description', None),
+		user_id=			context["user"]["oid"],
 	)
 	session.add(event)
 	session.commit()
@@ -210,7 +229,10 @@ def add_note(event_id, *, context):
 	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
 	if event is None:
 		return {"error": "Event not found"}, 404
-	note = notes(event_id=event_id, content=data['content'])
+	note = notes(
+		event_id=	event_id,
+		content=	data['content'],
+	)
 	session.add(note)
 	session.commit()
 	return automap_to_dict(note), 201
@@ -223,7 +245,7 @@ def update_note(event_id, note_id, *, context):
 	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
 	if event is None:
 		return {"error": "Event not found"}, 404
-	note = session.query(notes).get(note_id)
+	note = session.get(notes, note_id)
 	if note is None or note.event_id != event_id:
 		return {"error": "Note not found"}, 404
 	apply_data_to_automap(note, data)
@@ -238,7 +260,7 @@ def delete_note(event_id, note_id, *, context):
 	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
 	if event is None:
 		return {"error": "Event not found"}, 404
-	note = session.query(notes).get(note_id)
+	note = session.get(notes, note_id)
 	if note is None or note.event_id != event_id:
 		return {"error": "Note not found"}, 404
 	session.delete(note)
@@ -262,10 +284,10 @@ def upload_file(event_id, *, context):
 
 	file_data = upload.read()
 	file_entry = file_attachments(
-		event_id=event_id,
-		file_name=upload.filename,
-		file_size=len(file_data),
-		content_type=upload.content_type,
+		event_id=			event_id,
+		file_name=		upload.filename,
+		file_size=		len(file_data),
+		content_type=	upload.content_type,
 	)
 	session.add(file_entry)
 	session.commit()
@@ -295,7 +317,7 @@ def get_file_contents(event_id, file_id, *, context):
 	if not event:
 		return {"error": "Event not found"}, 403
 
-	file = session.query(file_attachments).get(file_id)
+	file = session.get(file_attachments, file_id)
 	if file is None or file.event_id != event_id:
 		return {"error": "File not found"}, 404
 
@@ -318,7 +340,7 @@ def delete_file(event_id, file_id, *, context):
 	if event is None:
 		return {"error": "Event not found"}, 404
 
-	file = session.query(file_attachments).get(file_id)
+	file = session.get(file_attachments, file_id)
 	if file is None or file.event_id != event_id:
 		return {"error": "File not found"}, 404
 
@@ -349,7 +371,10 @@ def add_reminder(event_id, *, context):
 	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
 	if event is None:
 		return {"error": "Event not found"}, 404
-	reminder = reminders(event_id=event_id, content=data['content'])
+	reminder = reminders(
+		event_id=	event_id,
+		content=	data['content'],
+	)
 	session.add(reminder)
 	session.commit()
 	return automap_to_dict(reminder), 201
@@ -362,7 +387,7 @@ def update_reminder(event_id, reminder_id, *, context):
 	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
 	if event is None:
 		return {"error": "Event not found"}, 404
-	reminder = session.query(reminders).get(reminder_id)
+	reminder = session.get(reminders, reminder_id)
 	if reminder is None or reminder.event_id != event_id:
 		return {"error": "reminder not found"}, 404
 	apply_data_to_automap(reminder, data)
@@ -377,14 +402,12 @@ def delete_reminder(event_id, reminder_id, *, context):
 	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
 	if event is None:
 		return {"error": "Event not found"}, 404
-	reminder = session.query(reminders).get(reminder_id)
+	reminder = session.get(reminders, reminder_id)
 	if reminder is None or reminder.event_id != event_id:
 		return {"error": "reminder not found"}, 404
 	session.delete(reminder)
 	session.commit()
 	return {}, 204
-
-
 
 @app.route('/')
 @auth.login_required
