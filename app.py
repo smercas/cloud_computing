@@ -405,20 +405,6 @@ def hello():
 	return redirect(url_for('index'))
 
 if __name__ == '__main__':
-	# test blob upload - merge! 
-	try:
-		test_filename = "app_config.txt"
-		with open(test_filename, "w") as f:
-			f.write("Test upload\n")
-
-		upload_file_to_container(test_filename, test_filename)
-
-		print("upload test successful.")
-	except Exception as e:
-		print("upload test failed:", str(e))
-
-
-	webbrowser.open('http://localhost:5000/events')
 	# for rule in app.url_map.iter_rules():
 	# 	print(f"{rule.endpoint:30s} {','.join(rule.methods):20s} {rule}")
 	app.run()
