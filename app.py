@@ -4,7 +4,6 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import text
 from sqlalchemy.ext.automap import automap_base, AutomapBase
 from sqlalchemy.orm import Session
 from identity.flask import Auth
@@ -54,8 +53,8 @@ with app.app_context():
 users = base.classes.users
 events = base.classes.events
 notes = base.classes.notes
-reminders = base.classes.reminders
 file_attachments = base.classes.file_attachments
+reminders = base.classes.reminders
 
 events.field_transform_pairs = {
 	'title':				utils.identity,
@@ -66,7 +65,19 @@ events.field_transform_pairs = {
 } # im too lazy to do reflection on the object and figure out a cleaner way of doing this
 
 notes.field_transform_pairs = {
-	"content": utils.identity,
+	"content":	utils.identity,
+}
+
+file_attachments.field_transform_pairs = {
+	"file_name":		utils.identity,
+	"file_size":		utils.identity,
+	"content_type":	utils.identity,
+}
+
+reminders.field_transform_pairs = {
+	"seconds_before_event":	utils.identity,
+	"notify_by_email":			utils.identity,
+	"notify_by_popup":			utils.identity,
 }
 
 def apply_data_to_automap(o, data: dict[str, str]):
@@ -77,6 +88,8 @@ def apply_data_to_automap(o, data: dict[str, str]):
 
 events.apply = apply_data_to_automap
 notes.apply = apply_data_to_automap
+file_attachments.apply = apply_data_to_automap
+reminders.apply = apply_data_to_automap
 
 def automap_to_dict(o):
 	res = {f: getattr(o, f) for f in o.__class__.field_transform_pairs.keys()}
@@ -87,8 +100,8 @@ def automap_to_dict(o):
 @auth.login_required
 def get_events(*, context):
 	session = Session(db.engine)
-	events = session.query(events).filter(events.user_id == context["user"]["oid"]).all()
-	return { "events": list(map(automap_to_dict, events)) }
+	es = session.query(events).filter(events.user_id == context["user"]["oid"]).all()
+	return { "events": list(map(automap_to_dict, es)) }
 
 @app.route("/events", methods=["POST"])
 @auth.login_required
@@ -107,12 +120,12 @@ def create_event(*, context):
 	session.commit()
 	return automap_to_dict(event), 201
 
-@app.route("/events/<id>", methods=["GET"])
+@app.route("/events/<event_id>", methods=["GET"])
 @auth.login_required
-def get_event(id, *, context):
+def get_event(event_id, *, context):
 	session = Session(db.engine)
-	event = session.query(events).filter_by(id=id, user_id=context["user"]["oid"]).first()
-	if not event:
+	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+	if event is None:
 		return {"error": "Event not found"}, 404
 	return automap_to_dict(event), 200
 
@@ -122,7 +135,7 @@ def update_event(event_id, *, context):
 	data = request.json
 	session = Session(db.engine)
 	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
-	if not event:
+	if event is None:
 		return {"error": "Event not found"}, 404
 	apply_data_to_automap(event, data)
 	# event.apply(data) #TODO: see if this works
@@ -134,7 +147,7 @@ def update_event(event_id, *, context):
 def delete_event(event_id, *, context):
 	session = Session(db.engine)
 	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
-	if not event:
+	if event is None:
 		return {"error": "Event not found"}, 404
 	session.delete(event)
 	session.commit()
@@ -145,10 +158,10 @@ def delete_event(event_id, *, context):
 def get_notes(event_id, *, context):
 	session = Session(db.engine)
 	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
-	if not event:
+	if event is None:
 		return {"error": "Event not found"}, 404
-	notes = session.query(notes).filter_by(event_id=event_id).all()
-	return {"notes": list(map(automap_to_dict, notes))}, 200
+	ns = session.query(notes).filter_by(event_id=event_id).all()
+	return {"notes": list(map(automap_to_dict, ns))}, 200
 
 @app.route("/events/<event_id>/notes", methods=["POST"])
 @auth.login_required
@@ -156,7 +169,7 @@ def add_note(event_id, *, context):
 	data = request.json
 	session = Session(db.engine)
 	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
-	if not event:
+	if event is None:
 		return {"error": "Event not found"}, 404
 	note = notes(event_id=event_id, content=data['content'])
 	session.add(note)
@@ -169,10 +182,10 @@ def update_note(event_id, note_id, *, context):
 	data = request.json
 	session = Session(db.engine)
 	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
-	if not event:
+	if event is None:
 		return {"error": "Event not found"}, 404
 	note = session.query(notes).get(note_id)
-	if not note or note.event_id != event_id:
+	if note is None or note.event_id != event_id:
 		return {"error": "Note not found"}, 404
 	apply_data_to_automap(note, data)
 	# note.apply(data) #TODO: see if this works
@@ -184,16 +197,153 @@ def update_note(event_id, note_id, *, context):
 def delete_note(event_id, note_id, *, context):
 	session = Session(db.engine)
 	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
-	if not event:
+	if event is None:
 		return {"error": "Event not found"}, 404
 	note = session.query(notes).get(note_id)
-	if not note or note.event_id != event_id:
+	if note is None or note.event_id != event_id:
 		return {"error": "Note not found"}, 404
 	session.delete(note)
 	session.commit()
 	return {}, 204
 
+@app.route("/events/<event_id>/upload", methods=["POST"])
+@auth.login_required
+def upload_file(event_id, *, context):
+	session = Session(db.engine)
+	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+	if event is None:
+		return {"error": "Event not found"}, 404
+	
+	upload = request.files.get('file', None)
+	if upload is None:
+		return {"error": "No file part in the request"}, 400
 
+	if upload.filename == '':
+		return {"error": "No selected file"}, 400
+
+	file_data = upload.read()
+	file_entry = file_attachments(
+		event_id=event_id,
+		file_name=upload.filename,
+		file_size=len(file_data),
+		content_type=upload.content_type,
+	)
+	session.add(file_entry)
+	session.commit()
+
+	filename = f"{event_id}_{file_entry.id}_{upload.filename}"
+	container_client.upload_blob(name=filename, data=file_data)
+
+	file_entry.blob_name = filename
+	session.commit()
+	return automap_to_dict(file_entry), 201
+
+@app.route("/events/<event_id>/files", methods=["GET"])
+@auth.login_required
+def list_files(event_id, *, context):
+	session = Session(db.engine)
+	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+	if event is None:
+		return {"error": "Event not found"}, 404
+	files = session.query(file_attachments).filter_by(event_id=event_id).all()
+	return {"files": [automap_to_dict(f) for f in files]}, 200
+
+@app.route("/events/<event_id>/files/<file_id>", methods=["GET"])
+@auth.login_required
+def get_file_contents(event_id, file_id, *, context):
+	session = Session(db.engine)
+	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+	if not event:
+		return {"error": "Event not found"}, 403
+
+	file = session.query(file_attachments).get(file_id)
+	if file is None or file.event_id != event_id:
+		return {"error": "File not found"}, 404
+
+	try:
+		blob = container_client.download_blob(file.blob_path)
+		body = blob.readall()
+		headers = {
+			"Content-Type": file.content_type or "application/octet-stream",
+			"Content-Disposition": f"attachment; filename={file.file_name}"
+		}
+		return body, 200, headers
+	except Exception as e:
+		return {"error": f"Failed to fetch blob: {str(e)}"}, 500
+
+@app.route("/events/<event_id>/files/<file_id>", methods=["DELETE"])
+@auth.login_required
+def delete_file(event_id, file_id, *, context):
+	session = Session(db.engine)
+	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+	if event is None:
+		return {"error": "Event not found"}, 404
+
+	file = session.query(file_attachments).get(file_id)
+	if file is None or file.event_id != event_id:
+		return {"error": "File not found"}, 404
+
+	try:
+		container_client.delete_blob(file.blob_name)
+	except Exception as e:
+		print(f"Warning: Failed to delete blob {file.blob_name}: {e}")
+
+	session.delete(file)
+	session.commit()
+	return {}, 204
+
+@app.route("/events/<event_id>/reminders", methods=["GET"])
+@auth.login_required
+def get_reminders(event_id, *, context):
+	session = Session(db.engine)
+	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+	if event is None:
+		return {"error": "Event not found"}, 404
+	rs = session.query(reminders).filter_by(event_id=event_id).all()
+	return {"reminders": list(map(automap_to_dict, rs))}, 200
+
+@app.route("/events/<event_id>/reminders", methods=["POST"])
+@auth.login_required
+def add_reminder(event_id, *, context):
+	data = request.json
+	session = Session(db.engine)
+	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+	if event is None:
+		return {"error": "Event not found"}, 404
+	reminder = reminders(event_id=event_id, content=data['content'])
+	session.add(reminder)
+	session.commit()
+	return automap_to_dict(reminder), 201
+
+@app.route("/events/<event_id>/reminders/<reminder_id>", methods=["PUT"])
+@auth.login_required
+def update_reminder(event_id, reminder_id, *, context):
+	data = request.json
+	session = Session(db.engine)
+	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+	if event is None:
+		return {"error": "Event not found"}, 404
+	reminder = session.query(reminders).get(reminder_id)
+	if reminder is None or reminder.event_id != event_id:
+		return {"error": "reminder not found"}, 404
+	apply_data_to_automap(reminder, data)
+	# reminder.apply(data) #TODO: see if this works
+	session.commit()
+	return {}, 200
+
+@app.route("/events/<event_id>/reminders/<reminder_id>", methods=["DELETE"])
+@auth.login_required
+def delete_reminder(event_id, reminder_id, *, context):
+	session = Session(db.engine)
+	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+	if event is None:
+		return {"error": "Event not found"}, 404
+	reminder = session.query(reminders).get(reminder_id)
+	if reminder is None or reminder.event_id != event_id:
+		return {"error": "reminder not found"}, 404
+	session.delete(reminder)
+	session.commit()
+	return {}, 204
 
 
 
@@ -215,17 +365,17 @@ def hello():
 		return render_template('hello.html', name = name)
 	return redirect(url_for('index'))
 
-@app.route("/logout")
-def logout():
-	tenant = key_vault["b2c-tenant-name"]
-	policy = key_vault["b2c-sign-up-and-sign-in-user-flow"]
-	post_logout_redirect_uri = url_for("index", _external=True)
+# @app.route("/logout")
+# def logout():
+# 	tenant = key_vault["b2c-tenant-name"]
+# 	policy = key_vault["b2c-sign-up-and-sign-in-user-flow"]
+# 	post_logout_redirect_uri = url_for("index", _external=True)
 
-	logout_url = (
-		f"https://{tenant}.b2clogin.com/{tenant}.onmicrosoft.com/{policy}/oauth2/v2.0/logout"
-		f"?post_logout_redirect_uri={post_logout_redirect_uri}"
-	)
-	return redirect(logout_url)
+# 	logout_url = (
+# 		f"https://{tenant}.b2clogin.com/{tenant}.onmicrosoft.com/{policy}/oauth2/v2.0/logout"
+# 		f"?post_logout_redirect_uri={post_logout_redirect_uri}"
+# 	)
+# 	return redirect(logout_url)
 
 
 if __name__ == '__main__':
@@ -243,4 +393,6 @@ if __name__ == '__main__':
 
 
 	webbrowser.open('http://localhost:5000/events')
+	for rule in app.url_map.iter_rules():
+		print(f"{rule.endpoint:30s} {','.join(rule.methods):20s} {rule}")
 	app.run()
