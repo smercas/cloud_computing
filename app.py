@@ -85,13 +85,37 @@ events.to_dict = automap_to_dict
 notes.to_dict = automap_to_dict
 file_attachments.to_dict = automap_to_dict
 reminders.to_dict = automap_to_dict
+users.to_dict = lambda u: {f: getattr(u, f) for f in ["id", "display_name", "email"]}
 
 # region reminder processing
 
+from sendgrid import Mail, SendGridAPIClient
 def process_reminder(reminder, event, user):
-	print(reminder)
-	print(event)
-	print(user)
+	if reminder["notify_by_email"]:
+		msg = Mail(
+			from_email=		"smercas@gmail.com",
+			to_emails=		user["email"],
+			subject=			"fuck u",
+			html_content=	f"""
+				<html>
+					<body>
+						<h1>Reminder</h1>
+						<p><strong>Message:</strong> fuck u again</p>
+						<p><strong>Reminder:</strong> {str(reminder)}</p>
+						<p><strong>Event:</strong> {str(event)}</p>
+						<p><strong>User:</strong> {str(user)}</p>
+					</body>
+				</html>
+			"""
+		)
+		try:
+			sg = SendGridAPIClient(key_vault["sendgrid-api-key"])
+			response = sg.send(msg)
+			# print(f"Status code: {response.status_code}")
+		except Exception as e:
+			print(f"Error: {e}")
+	if reminder["notify_by_popup"]:
+		print("we didn't bother writing ts")
 
 with app.app_context():
 	from backend.reminder_scheduler import ReminderScheduler
