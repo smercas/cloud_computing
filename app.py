@@ -4,9 +4,11 @@ import os
 
 from dotenv import load_dotenv
 load_dotenv()
+
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.ext.automap import automap_base, AutomapBase
 from sqlalchemy.orm import Session
+from sqlalchemy import Column, Integer, MetaData, Table, event
 from identity.flask import Auth
 from flask import (	Flask, redirect, render_template, request,
 										send_from_directory, url_for)
@@ -58,9 +60,9 @@ file_attachments.field_transform_pairs = {
 }
 
 reminders.field_transform_pairs = {
-	"seconds_before_event":	utils.identity,
-	"notify_by_email":			utils.identity,
-	"notify_by_popup":			utils.identity,
+	"seconds_before_notify":	utils.identity,
+	"notify_by_email":				utils.identity,
+	"notify_by_popup":				utils.identity,
 }
 
 def apply_data_to_automap(o, data: dict[str, str]):
@@ -78,6 +80,24 @@ def automap_to_dict(o):
 	res = {f: getattr(o, f) for f in o.__class__.field_transform_pairs.keys()}
 	res["id"] = o.id
 	return {k: v for k, v in res.items() if v is not None}
+
+events.to_dict = automap_to_dict
+notes.to_dict = automap_to_dict
+file_attachments.to_dict = automap_to_dict
+reminders.to_dict = automap_to_dict
+
+# region reminder processing
+
+def process_reminder(reminder, event):
+	print(reminder)
+	print(event)
+
+with app.app_context():
+	from backend.reminder_scheduler import ReminderScheduler
+	scheduler = ReminderScheduler(db, events, reminders, process_reminder)
+	scheduler.start()
+
+# endregion reminder processing
 
 class CustomAuth(Auth): # there might be issues here but i'm too dumb to figure them out
 	@staticmethod
@@ -115,6 +135,8 @@ auth = CustomAuth(
 	b2c_edit_profile_user_flow=		key_vault['b2c-edit-profile-user-flow'],
 	b2c_reset_password_user_flow=	key_vault['b2c-reset-password-user-flow'],
 )
+
+# region events
 
 @app.route("/events", methods=["GET"])
 @auth.login_required
@@ -211,6 +233,10 @@ def delete_event(event_id, *, context):
 	session.commit()
 	return {}, 204
 
+# endregion events
+
+# region notes
+
 @app.route("/events/<event_id>/notes", methods=["GET"])
 @auth.login_required
 def get_notes(event_id, *, context):
@@ -266,6 +292,10 @@ def delete_note(event_id, note_id, *, context):
 	session.delete(note)
 	session.commit()
 	return {}, 204
+
+# endregion notes
+
+# region file attachments
 
 @app.route("/events/<event_id>/upload", methods=["POST"])
 @auth.login_required
@@ -353,6 +383,10 @@ def delete_file(event_id, file_id, *, context):
 	session.commit()
 	return {}, 204
 
+# endregion file attachments
+
+# region reminders
+
 @app.route("/events/<event_id>/reminders", methods=["GET"])
 @auth.login_required
 def get_reminders(event_id, *, context):
@@ -376,6 +410,7 @@ def add_reminder(event_id, *, context):
 		content=	data['content'],
 	)
 	session.add(reminder)
+	scheduler.add(reminder)
 	session.commit()
 	return automap_to_dict(reminder), 201
 
@@ -392,6 +427,7 @@ def update_reminder(event_id, reminder_id, *, context):
 		return {"error": "reminder not found"}, 404
 	apply_data_to_automap(reminder, data)
 	# reminder.apply(data) #TODO: see if this works
+	scheduler.add(reminder)
 	session.commit()
 	return {}, 200
 
@@ -406,19 +442,21 @@ def delete_reminder(event_id, reminder_id, *, context):
 	if reminder is None or reminder.event_id != event_id:
 		return {"error": "reminder not found"}, 404
 	session.delete(reminder)
+	scheduler.remove(reminder)
 	session.commit()
 	return {}, 204
 
+#endregion reminders
 
 @app.route("/homepage", methods=["GET"])
 def homepage():
-    return render_template('homepage.html')
+		return render_template('homepage.html')
 
 @app.route("/calendar", methods=["GET"])
 @auth.login_required
 def calendar(*, context):
-    #return "route is working"
-    return render_template('calendar.html')
+		#return "route is working"
+		return render_template('calendar.html')
 
 @app.route('/')
 @auth.login_required
