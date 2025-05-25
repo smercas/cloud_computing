@@ -409,10 +409,21 @@ def delete_reminder(event_id, reminder_id, *, context):
 	session.commit()
 	return {}, 204
 
+
+@app.route("/homepage", methods=["GET"])
+def homepage():
+    return render_template('homepage.html')
+
+@app.route("/calendar", methods=["GET"])
+@auth.login_required
+def calendar(*, context):
+    #return "route is working"
+    return render_template('calendar.html')
+
 @app.route('/')
 @auth.login_required
 def index(*, context):
-	return render_template('index.html')
+	return redirect(url_for('calendar'))
 
 @app.route('/favicon.ico')
 def favicon():
