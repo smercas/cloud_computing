@@ -12,22 +12,23 @@ from flask import (	Flask, redirect, render_template, request,
 
 from backend import utils
 
+from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
 import webbrowser
 
 from backend.key_vault import KeyVault
 key_vault = KeyVault(default_transform=utils.to_value)
 
-AZURE_CONNECTION_STRING = " DefaultEndpointsProtocol=https;AccountName=calendarappstoragecloud;AccountKey=40Qtdu5nPtczY4yg8wbWcNVnLiYWBCkaDGbQ3fMvBQ1/lgkEuKRC9rV+/UM6utw38Jp8PjUTemsr+AStCeFD6g==;EndpointSuffix=core.windows.net" # DON'T PUT SECRETS HERE BTW; if you're sure abt using some secrets, you can add them to the env in github > setting > secrets and variables
-CONTAINER_NAME = "event-files"
-blob_service_client = BlobServiceClient.from_connection_string(AZURE_CONNECTION_STRING)
-container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+
+credential = DefaultAzureCredential()
+blob_service_client = BlobServiceClient(account_url=key_vault["blob-account-url"], credential=credential)
+container_client = blob_service_client.get_container_client(key_vault["blob-container-name"])
 
 def upload_file_to_container(file_name, file_path):
 	# Upload the file to the container
 	with open(file_path, "rb") as data:
 		container_client.upload_blob(name=file_name, data=data)
-		print(f"File {file_name} uploaded to container {CONTAINER_NAME}.")
+		print(f"File {file_name} uploaded to container {key_vault["blob-container-name"]}.")
 
 app = Flask(__name__)
 app.config.from_object('app_config')
@@ -131,18 +132,15 @@ def get_events(*, context):
 			events.start_time >= start,
 			events.start_time < end
 		).all()
+		# es += session.query(events).filter(
+		# 	events.user_id == context["user"]["oid"],
+		# 	events.end_time >= start,
+		# 	events.end_time < end
+		# ).all()
 	else:
 		es = session.query(events).filter(events.user_id == context["user"]["oid"]).all()
 
 	return {"events": list(map(automap_to_dict, es))}
-
-
-@app.route("/events", methods=["GET"])
-@auth.login_required
-def get_events(*, context):
-	session = Session(db.engine)
-	es = session.query(events).filter(events.user_id == context["user"]["oid"]).all()
-	return { "events": list(map(automap_to_dict, es)) }
 
 @app.route("/events", methods=["POST"])
 @auth.login_required
@@ -408,19 +406,19 @@ def hello():
 
 if __name__ == '__main__':
 	# test blob upload - merge! 
-	# try:
-	# 	test_filename = r"C:\Users\panai\Downloads\CLOUD COMPUTING.pdf"
-	# 	with open(test_filename, "w") as f:
-	# 		f.write("Test upload")
+	try:
+		test_filename = "app_config.txt"
+		with open(test_filename, "w") as f:
+			f.write("Test upload\n")
 
-	# 	upload_file_to_container(test_filename, test_filename)
+		upload_file_to_container(test_filename, test_filename)
 
-	# 	print("upload test successful.")
-	# except Exception as e:
-	# 	print("upload test failed:", str(e))
+		print("upload test successful.")
+	except Exception as e:
+		print("upload test failed:", str(e))
 
 
 	webbrowser.open('http://localhost:5000/events')
-	for rule in app.url_map.iter_rules():
-		print(f"{rule.endpoint:30s} {','.join(rule.methods):20s} {rule}")
+	# for rule in app.url_map.iter_rules():
+	# 	print(f"{rule.endpoint:30s} {','.join(rule.methods):20s} {rule}")
 	app.run()
