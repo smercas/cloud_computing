@@ -88,13 +88,14 @@ reminders.to_dict = automap_to_dict
 
 # region reminder processing
 
-def process_reminder(reminder, event):
+def process_reminder(reminder, event, user):
 	print(reminder)
 	print(event)
+	print(user)
 
 with app.app_context():
 	from backend.reminder_scheduler import ReminderScheduler
-	scheduler = ReminderScheduler(db, events, reminders, process_reminder)
+	scheduler = ReminderScheduler(db, reminders, events, users, process_reminder)
 	scheduler.start()
 
 # endregion reminder processing

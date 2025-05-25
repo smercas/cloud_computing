@@ -6,10 +6,11 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
 class ReminderScheduler:
-	def __init__(self, db: SQLAlchemy, events, reminders, process_fn):
+	def __init__(self, db: SQLAlchemy, reminders, events, users, process_fn):
 		self.__db = db
-		self.__events = events
 		self.__reminders = reminders
+		self.__events = events
+		self.__users = users
 		self.__process_fn = process_fn
 		self.__scheduler = BackgroundScheduler(jobstores={
 			'default': SQLAlchemyJobStore(engine=self.__db.engine)
@@ -40,11 +41,12 @@ class ReminderScheduler:
 		session = Session(self.__db.engine)
 		event = session.get(self.__events, reminder.event_id)
 		notify_date = event.start_date - timedelta(seconds=reminder.seconds_before_notify)
+		user = session.get(self.__users, event.user_id)
 		self.__scheduler.add_job(
 			self.__process_fn,
 			'date',
 			run_date=notify_date,
-			args=[reminder.to_dict(), event.to_dict()],
+			args=[reminder.to_dict(), event.to_dict(), user.to_dict()],
 			id=str(reminder.id),
 			replace_existing=True
 		)
