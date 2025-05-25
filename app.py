@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 
 from dotenv import load_dotenv
@@ -95,6 +95,47 @@ def automap_to_dict(o):
 	res = {f: getattr(o, f) for f in o.__class__.field_transform_pairs.keys()}
 	res["id"] = o.id
 	return {k: v for k, v in res.items() if v is not None}
+
+@app.route("/events", methods=["GET"])
+@auth.login_required
+def get_events(*, context):
+	session = Session(db.engine)
+	scope = request.args.get("scope", None)  # day, week, month, year
+	base_date_str = request.args.get("date", None)
+
+	if all(v is not None for v in [scope, base_date_str]):
+		try:
+			base_date = datetime.fromisoformat(base_date_str)
+		except ValueError:
+			return {"error": "Invalid date format, use YYYY-MM-DD"}, 400
+
+		match scope:
+			case "day":
+				start = base_date
+				end = base_date + timedelta(days=1)
+			case "week":
+				start = base_date - timedelta(days=base_date.weekday())
+				end = start + timedelta(weeks=1)
+			case "month":
+				start = base_date.replace(day=1)
+				next_month = start.replace(day=28) + timedelta(days=4)
+				end = next_month.replace(day=1)
+			case "year":
+				start = base_date.replace(month=1, day=1)
+				end = start.replace(year=start.year + 1)
+			case _:
+				return {"error": "Unsupported scope"}, 400
+
+		es = session.query(events).filter(
+			events.user_id == context["user"]["oid"],
+			events.start_time >= start,
+			events.start_time < end
+		).all()
+	else:
+		es = session.query(events).filter(events.user_id == context["user"]["oid"]).all()
+
+	return {"events": list(map(automap_to_dict, es))}
+
 
 @app.route("/events", methods=["GET"])
 @auth.login_required
@@ -364,19 +405,6 @@ def hello():
 	if name:
 		return render_template('hello.html', name = name)
 	return redirect(url_for('index'))
-
-# @app.route("/logout")
-# def logout():
-# 	tenant = key_vault["b2c-tenant-name"]
-# 	policy = key_vault["b2c-sign-up-and-sign-in-user-flow"]
-# 	post_logout_redirect_uri = url_for("index", _external=True)
-
-# 	logout_url = (
-# 		f"https://{tenant}.b2clogin.com/{tenant}.onmicrosoft.com/{policy}/oauth2/v2.0/logout"
-# 		f"?post_logout_redirect_uri={post_logout_redirect_uri}"
-# 	)
-# 	return redirect(logout_url)
-
 
 if __name__ == '__main__':
 	# test blob upload - merge! 
