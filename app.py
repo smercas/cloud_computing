@@ -57,6 +57,7 @@ file_attachments.field_transform_pairs = {
 	"file_name":		utils.identity,
 	"file_size":		utils.identity,
 	"content_type":	utils.identity,
+	"blob_path":    utils.identity,
 }
 
 reminders.field_transform_pairs = {
@@ -76,10 +77,21 @@ notes.apply = apply_data_to_automap
 file_attachments.apply = apply_data_to_automap
 reminders.apply = apply_data_to_automap
 
+# def automap_to_dict(o):
+# 	res = {f: getattr(o, f) for f in o.__class__.field_transform_pairs.keys()}
+# 	res["id"] = o.id
+# 	return {k: v for k, v in res.items() if v is not None}
 def automap_to_dict(o):
-	res = {f: getattr(o, f) for f in o.__class__.field_transform_pairs.keys()}
-	res["id"] = o.id
-	return {k: v for k, v in res.items() if v is not None}
+    res = {}
+    for f in o.__class__.field_transform_pairs.keys():
+        value = getattr(o, f)
+        if value is not None:
+            if isinstance(value, datetime):
+                res[f] = value.isoformat()
+            else:
+                res[f] = value
+    res["id"] = o.id
+    return {k: v for k, v in res.items() if v is not None}
 
 events.to_dict = automap_to_dict
 notes.to_dict = automap_to_dict
@@ -115,7 +127,7 @@ def process_reminder(reminder, event, user):
 		except Exception as e:
 			print(f"Error: {e}")
 	if reminder["notify_by_popup"]:
-		print("we didn't bother writing ts")
+	    print(f"Popup reminder triggered: {event['title']} for {user['email']} at {event['start_date']}")
 
 with app.app_context():
 	from backend.reminder_scheduler import ReminderScheduler
@@ -195,8 +207,8 @@ def get_events(*, context):
 
 		es = session.query(events).filter(
 			events.user_id == context["user"]["oid"],
-			events.start_time >= start,
-			events.start_time < end
+			events.start_date >= start,
+			events.start_date < end
 		).all()
 		# es += session.query(events).filter(
 		# 	events.user_id == context["user"]["oid"],
@@ -210,20 +222,70 @@ def get_events(*, context):
 
 @app.route("/events", methods=["POST"])
 @auth.login_required
+# def create_event(*, context):
+# 	data = request.json
+# 	session = Session(db.engine)
+# 	event = events(
+# 		title=				data['title'],
+# 		start_time=		datetime.fromisoformat(data['start_time']),
+# 		end_time=			datetime.fromisoformat(data['end_time']),
+# 		location=			data.get('location', None),
+# 		description=	data.get('description', None),
+# 		user_id=			context["user"]["oid"],
+# 	)
+# 	session.add(event)
+# 	session.commit()
+# 	return automap_to_dict(event), 201
+
 def create_event(*, context):
-	data = request.json
-	session = Session(db.engine)
-	event = events(
-		title=				data['title'],
-		start_time=		datetime.fromisoformat(data['start_time']),
-		end_time=			datetime.fromisoformat(data['end_time']),
-		location=			data.get('location', None),
-		description=	data.get('description', None),
-		user_id=			context["user"]["oid"],
-	)
-	session.add(event)
-	session.commit()
-	return automap_to_dict(event), 201
+    try:
+        data = request.json
+        print(f"Received data: {data}")  
+        
+        session = Session(db.engine)
+        
+        required_fields = ['title', 'start_date', 'end_date']
+        for field in required_fields:
+            if field not in data:
+                return {"error": f"Missing required field: {field}"}, 400
+        
+        try:
+            start_date = datetime.fromisoformat(data['start_date'])
+            end_date = datetime.fromisoformat(data['end_date'])
+        except ValueError as e:
+            return {"error": f"Invalid date format: {str(e)}"}, 400
+        
+        print(f"Events class attributes: {dir(events)}")
+        
+        event = events()
+        event.title = data['title']
+        event.start_date = start_date
+        event.end_date = end_date
+        event.location = data.get('location', None)
+        event.description = data.get('description', None)
+        event.user_id = context["user"]["oid"]
+        
+        print(f"Created event object: {event}")  # Debug print
+        print(f"Event start_date: {event.start_date}")
+        print(f"Event end_date: {event.end_date}")
+        
+        session.add(event)
+        session.commit()
+        
+        return automap_to_dict(event), 201
+	
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error creating event: {str(e)}")
+        print(f"Full traceback: {error_details}")
+        
+        return {
+            "error": "Failed to create event",
+            "details": str(e),
+            "traceback": error_details
+        }, 500
 
 @app.route("/events/<event_id>", methods=["GET"])
 @auth.login_required
@@ -324,35 +386,90 @@ def delete_note(event_id, note_id, *, context):
 
 @app.route("/events/<event_id>/upload", methods=["POST"])
 @auth.login_required
-def upload_file(event_id, *, context):
-	session = Session(db.engine)
-	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
-	if event is None:
-		return {"error": "Event not found"}, 404
+# def upload_file(event_id, *, context):
+# 	session = Session(db.engine)
+# 	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+# 	if event is None:
+# 		return {"error": "Event not found"}, 404
 	
-	upload = request.files.get('file', None)
-	if upload is None:
-		return {"error": "No file part in the request"}, 400
+# 	upload = request.files.get('file', None)
+# 	if upload is None:
+# 		return {"error": "No file part in the request"}, 400
 
-	if upload.filename == '':
-		return {"error": "No selected file"}, 400
+# 	if upload.filename == '':
+# 		return {"error": "No selected file"}, 400
 
-	file_data = upload.read()
-	file_entry = file_attachments(
-		event_id=			event_id,
-		file_name=		upload.filename,
-		file_size=		len(file_data),
-		content_type=	upload.content_type,
-	)
-	session.add(file_entry)
-	session.commit()
+# 	file_data = upload.read()
+# 	file_entry = file_attachments(
+# 		event_id=			event_id,
+# 		file_name=		upload.filename,
+# 		file_size=		len(file_data),
+# 		content_type=	upload.content_type,
+# 	)
+# 	session.add(file_entry)
+# 	session.commit()
 
-	filename = f"{event_id}_{file_entry.id}_{upload.filename}"
-	container_client.upload_blob(name=filename, data=file_data)
+# 	filename = f"{event_id}_{file_entry.id}_{upload.filename}"
+# 	container_client.upload_blob(name=filename, data=file_data)
 
-	file_entry.blob_name = filename
-	session.commit()
-	return automap_to_dict(file_entry), 201
+# 	file_entry.blob_name = filename
+# 	session.commit()
+# 	return automap_to_dict(file_entry), 201
+
+def upload_file(event_id, *, context):
+    try:
+        session = Session(db.engine)
+        event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+        if event is None:
+            return {"error": "Event not found"}, 404
+        
+        upload = request.files.get('file', None)
+        if upload is None:
+            return {"error": "No file part in the request"}, 400
+
+        if upload.filename == '':
+            return {"error": "No selected file"}, 400
+
+        print(f"Uploading file: {upload.filename}")  # Debug
+        
+        file_data = upload.read()
+        import time
+        temp_id = int(time.time() * 1000) 
+        blob_filename = f"{event_id}_{temp_id}_{upload.filename}"
+        
+        file_entry = file_attachments(
+            event_id=event_id,
+            file_name=upload.filename,
+            file_size=len(file_data),
+            content_type=upload.content_type,
+            blob_path=blob_filename,  
+        )
+        session.add(file_entry)
+        session.commit()
+        
+        try:
+            blob_client = container_client.get_blob_client(blob_filename)
+            blob_client.upload_blob(file_data, overwrite=True)
+            print(f"File uploaded to blob storage successfully")  # Debug
+        except Exception as blob_error:
+            print(f"Blob upload error: {str(blob_error)}")  # Debug
+            session.delete(file_entry)
+            session.commit()
+            raise blob_error
+        
+        session.commit()
+        
+        return automap_to_dict(file_entry), 201
+        
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error uploading file: {str(e)}")
+        print(f"Full traceback: {error_details}")
+        return {
+            "error": "Failed to upload file",
+            "details": str(e)
+        }, 500
 
 @app.route("/events/<event_id>/files", methods=["GET"])
 @auth.login_required
@@ -366,47 +483,97 @@ def list_files(event_id, *, context):
 
 @app.route("/events/<event_id>/files/<file_id>", methods=["GET"])
 @auth.login_required
+# def get_file_contents(event_id, file_id, *, context):
+# 	session = Session(db.engine)
+# 	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+# 	if not event:
+# 		return {"error": "Event not found"}, 403
+
+# 	file = session.get(file_attachments, file_id)
+# 	if file is None or file.event_id != event_id:
+# 		return {"error": "File not found"}, 404
+
+# 	try:
+# 		blob = container_client.download_blob(file.blob_path)
+# 		body = blob.readall()
+# 		headers = {
+# 			"Content-Type": file.content_type or "application/octet-stream",
+# 			"Content-Disposition": f"attachment; filename={file.file_name}"
+# 		}
+# 		return body, 200, headers
+# 	except Exception as e:
+# 		return {"error": f"Failed to fetch blob: {str(e)}"}, 500
+@app.route("/events/<event_id>/files/<file_id>", methods=["GET"])
+@auth.login_required
 def get_file_contents(event_id, file_id, *, context):
-	session = Session(db.engine)
-	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
-	if not event:
-		return {"error": "Event not found"}, 403
+    session = Session(db.engine)
+    try:
+        # Convertește ID-urile la integer
+        event_id = int(event_id)
+        file_id = int(file_id)
+        
+        event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+        if not event:
+            return {"error": "Event not found"}, 403
 
-	file = session.get(file_attachments, file_id)
-	if file is None or file.event_id != event_id:
-		return {"error": "File not found"}, 404
-
-	try:
-		blob = container_client.download_blob(file.blob_path)
-		body = blob.readall()
-		headers = {
-			"Content-Type": file.content_type or "application/octet-stream",
-			"Content-Disposition": f"attachment; filename={file.file_name}"
-		}
-		return body, 200, headers
-	except Exception as e:
-		return {"error": f"Failed to fetch blob: {str(e)}"}, 500
+        file = session.get(file_attachments, file_id)
+        if file is None or file.event_id != event_id:
+            return {"error": "File not found"}, 404
+            
+        try:
+            blob = container_client.download_blob(file.blob_path)
+            body = blob.readall()
+            headers = {
+                "Content-Type": file.content_type or "application/octet-stream",
+                "Content-Disposition": f"attachment; filename={file.file_name}"
+            }
+            return body, 200, headers
+        except Exception as e:
+            print(f"Error downloading blob: {str(e)}")
+            return {"error": f"Failed to fetch blob: {str(e)}"}, 500
+    finally:
+        session.close()
+	
 
 @app.route("/events/<event_id>/files/<file_id>", methods=["DELETE"])
 @auth.login_required
+# def delete_file(event_id, file_id, *, context):
+# 	session = Session(db.engine)
+# 	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+# 	if event is None:
+# 		return {"error": "Event not found"}, 404
+
+# 	file = session.get(file_attachments, file_id)
+# 	if file is None or file.event_id != event_id:
+# 		return {"error": "File not found"}, 404
+
+# 	try:
+# 		container_client.delete_blob(file.blob_name)
+# 	except Exception as e:
+# 		print(f"Warning: Failed to delete blob {file.blob_name}: {e}")
+
+# 	session.delete(file)
+# 	session.commit()
+# 	return {}, 204
+
 def delete_file(event_id, file_id, *, context):
-	session = Session(db.engine)
-	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
-	if event is None:
-		return {"error": "Event not found"}, 404
+    session = Session(db.engine)
+    event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+    if event is None:
+        return {"error": "Event not found"}, 404
 
-	file = session.get(file_attachments, file_id)
-	if file is None or file.event_id != event_id:
-		return {"error": "File not found"}, 404
+    file = session.get(file_attachments, file_id)
+    if file is None or file.event_id != event_id:
+        return {"error": "File not found"}, 404
 
-	try:
-		container_client.delete_blob(file.blob_name)
-	except Exception as e:
-		print(f"Warning: Failed to delete blob {file.blob_name}: {e}")
+    try:
+        container_client.delete_blob(file.blob_path)  
+    except Exception as e:
+        print(f"Warning: Failed to delete blob {file.blob_path}: {e}")
 
-	session.delete(file)
-	session.commit()
-	return {}, 204
+    session.delete(file)
+    session.commit()
+    return {}, 204
 
 # endregion file attachments
 
@@ -425,19 +592,24 @@ def get_reminders(event_id, *, context):
 @app.route("/events/<event_id>/reminders", methods=["POST"])
 @auth.login_required
 def add_reminder(event_id, *, context):
-	data = request.json
-	session = Session(db.engine)
-	event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
-	if event is None:
-		return {"error": "Event not found"}, 404
-	reminder = reminders(
-		event_id=	event_id,
-		content=	data['content'],
-	)
-	session.add(reminder)
-	scheduler.add(reminder)
-	session.commit()
-	return automap_to_dict(reminder), 201
+    data = request.json
+    session = Session(db.engine)
+    event = session.query(events).filter_by(id=event_id, user_id=context["user"]["oid"]).first()
+    if event is None:
+        return {"error": "Event not found"}, 404
+    
+    reminder = reminders(
+        event_id=event_id,
+        seconds_before_notify=data.get('seconds_before_notify', 43200),  # default 12 ore
+        notify_by_email=data.get('notify_by_email', False),
+        notify_by_popup=data.get('notify_by_popup', True)
+    )
+    session.add(reminder)
+    session.commit()
+    
+    scheduler.add(reminder)
+    
+    return automap_to_dict(reminder), 201
 
 @app.route("/events/<event_id>/reminders/<reminder_id>", methods=["PUT"])
 @auth.login_required
@@ -473,15 +645,28 @@ def delete_reminder(event_id, reminder_id, *, context):
 
 #endregion reminders
 
+
 @app.route("/homepage", methods=["GET"])
 def homepage():
-		return render_template('homepage.html')
+    return render_template('homepage.html')
+
+@app.route("/login")
+def login_redirect():
+    return auth.login(next_link=url_for('calendar'))
+
+@app.route("/signup")
+def signup_redirect():
+    return auth.login(
+        next_link=url_for('calendar'),
+        scopes=[]  
+    )
+
 
 @app.route("/calendar", methods=["GET"])
 @auth.login_required
 def calendar(*, context):
-		#return "route is working"
-		return render_template('calendar.html')
+    #return "route is working"
+    return render_template('calendar.html')
 
 @app.route('/')
 @auth.login_required
@@ -501,7 +686,38 @@ def hello():
 		return render_template('hello.html', name = name)
 	return redirect(url_for('index'))
 
+@app.route("/notifications")
+@auth.login_required
+def get_notifications(*, context):
+    from datetime import datetime
+    session = Session(db.engine)
+    try:
+        now = datetime.utcnow()
+        user_reminders = session.query(reminders).join(events).filter(
+            events.user_id == context["user"]["oid"],
+            reminders.notify_by_popup == True
+        ).all()
+        
+        notifications = []
+        for r in user_reminders:
+            event = session.get(events, r.event_id)
+            if event:
+                notification_time = event.start_date - timedelta(seconds=r.seconds_before_notify)
+                
+                if now >= notification_time and now <= notification_time + timedelta(minutes=5):
+                    notifications.append({
+                        "title": f"Upcoming Event: {event.title}",
+                        "body": f"{event.description or ''} starts at {event.start_date.strftime('%H:%M')}"
+                    })
+        
+        return {"notifications": notifications}
+    finally:
+        session.close()
+
+
 if __name__ == '__main__':
 	# for rule in app.url_map.iter_rules():
 	# 	print(f"{rule.endpoint:30s} {','.join(rule.methods):20s} {rule}")
+	print(key_vault["b2c-sign-up-and-sign-in-user-flow"])
+
 	app.run()
