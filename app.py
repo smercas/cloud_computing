@@ -503,8 +503,6 @@ def list_files(event_id, *, context):
 # 		return body, 200, headers
 # 	except Exception as e:
 # 		return {"error": f"Failed to fetch blob: {str(e)}"}, 500
-@app.route("/events/<event_id>/files/<file_id>", methods=["GET"])
-@auth.login_required
 def get_file_contents(event_id, file_id, *, context):
     session = Session(db.engine)
     try:
